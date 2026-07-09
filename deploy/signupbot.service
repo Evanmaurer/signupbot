@@ -1,0 +1,27 @@
+# Linux VPS (systemd) — recommended for true 24/7 uptime
+#
+# 1. Copy bot to /opt/signupbot on your server
+# 2. Create user: sudo useradd -r -s /bin/false signupbot
+# 3. chown -R signupbot:signupbot /opt/signupbot
+# 4. sudo cp deploy/signupbot.service /etc/systemd/system/
+# 5. sudo systemctl daemon-reload
+# 6. sudo systemctl enable --now signupbot
+#
+# Logs: journalctl -u signupbot -f
+
+[Unit]
+Description=Discord Signup Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=signupbot
+Group=signupbot
+WorkingDirectory=/opt/signupbot
+ExecStart=/opt/signupbot/deploy/start.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

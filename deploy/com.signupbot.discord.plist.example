@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS 24/7 runner (launchd)
+
+  1. Copy to ~/Library/LaunchAgents/com.signupbot.discord.plist
+  2. Replace /FULL/PATH/TO/signupbot with your project path (e.g. /Users/you/signupbot)
+  3. loadctl load ~/Library/LaunchAgents/com.signupbot.discord.plist
+
+  Logs: signupbot/logs/bot.stdout.log and bot.stderr.log
+  Stop: launchctl unload ~/Library/LaunchAgents/com.signupbot.discord.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.signupbot.discord</string>
+    <key>WorkingDirectory</key>
+    <string>/FULL/PATH/TO/signupbot</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/FULL/PATH/TO/signupbot/deploy/start.sh</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/FULL/PATH/TO/signupbot/logs/bot.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/FULL/PATH/TO/signupbot/logs/bot.stderr.log</string>
+</dict>
+</plist>
