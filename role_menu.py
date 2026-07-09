@@ -69,12 +69,66 @@ def resolve_guild_role(guild: discord.Guild, role_text: str) -> discord.Role:
             raise ValueError(f"Role ID {role_text} not found in this server.")
         return role
 
+    # @Role Name typed in slash command (not a real mention)
+    if role_text.startswith("@"):
+        role_text = role_text[1:].strip()
+
     lowered = role_text.lower()
     for role in guild.roles:
         if role.name.lower() == lowered:
             return role
 
     raise ValueError(f'Role "{role_text}" not found. Use an exact role name or @mention.')
+
+
+def _split_role_and_next_emoji(role_segment: str) -> tuple[str, str | None]:
+    """When multiple mappings are on one line, peel the next emoji off the role segment."""
+    # Pairs are separated by two or more spaces before the next emoji.
+    match = re.search(r"\s{2,}(.+)$", role_segment.strip())
+    if match:
+        role_part = role_segment[: match.start()].strip()
+        next_emoji = match.group(1).strip()
+        return role_part, next_emoji
+    return role_segment.strip(), None
+
+
+def _parse_mapping_line(line: str) -> list[tuple[str, str]]:
+    """Parse one line into (emoji, role) pairs (supports multiple pairs per line)."""
+    line = line.strip()
+    if not line:
+        return []
+
+    if not MAPPING_SPLIT_PATTERN.search(line):
+        match = MAPPING_FALLBACK_PATTERN.match(line)
+        if not match:
+            raise ValueError(
+                f'Invalid mapping line: "{line}". '
+                "Use format: `🌟 → AVA` or one mapping per line."
+            )
+        return [(match.group(1).strip(), match.group(2).strip())]
+
+    segments = MAPPING_SPLIT_PATTERN.split(line)
+    if len(segments) < 2:
+        raise ValueError(f'Invalid mapping line: "{line}".')
+
+    pairs: list[tuple[str, str]] = []
+    emoji_part = segments[0].strip()
+
+    for index in range(1, len(segments)):
+        role_segment = segments[index]
+        if index < len(segments) - 1:
+            role_part, next_emoji = _split_role_and_next_emoji(role_segment)
+            pairs.append((emoji_part, role_part))
+            if next_emoji is None:
+                raise ValueError(
+                    f'Could not parse mapping in: "{line}". '
+                    "Put each mapping on its own line."
+                )
+            emoji_part = next_emoji
+        else:
+            pairs.append((emoji_part, role_segment.strip()))
+
+    return pairs
 
 
 def parse_role_mappings(
@@ -86,28 +140,22 @@ def parse_role_mappings(
     Returns list of (emoji_key, role, display_label).
     """
     entries: list[tuple[str, discord.Role, str]] = []
-    for raw_line in text.strip().splitlines():
+
+    # Allow one mapping per line, or several on a single line separated by arrows.
+    normalized = text.replace("\r\n", "\n").strip()
+    if not normalized:
+        raise ValueError("Provide at least one emoji → role mapping.")
+
+    for raw_line in normalized.splitlines():
         line = raw_line.strip()
         if not line:
             continue
 
-        if MAPPING_SPLIT_PATTERN.search(line):
-            emoji_part, role_part = MAPPING_SPLIT_PATTERN.split(line, maxsplit=1)
-            emoji_part = emoji_part.strip()
-            role_part = role_part.strip()
-        else:
-            match = MAPPING_FALLBACK_PATTERN.match(line)
-            if not match:
-                raise ValueError(
-                    f'Invalid mapping line: "{line}". '
-                    'Use format: `🌟 → AVA` or `🌟 AVA`'
-                )
-            emoji_part, role_part = match.group(1).strip(), match.group(2).strip()
-
-        emoji_key = parse_emoji_token(emoji_part)
-        role = resolve_guild_role(guild, role_part)
-        display = role_part.lstrip("@")
-        entries.append((emoji_key, role, display))
+        for emoji_part, role_part in _parse_mapping_line(line):
+            emoji_key = parse_emoji_token(emoji_part)
+            role = resolve_guild_role(guild, role_part)
+            display = role.name
+            entries.append((emoji_key, role, display))
 
     if not entries:
         raise ValueError("Provide at least one emoji → role mapping.")
