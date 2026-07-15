@@ -176,7 +176,7 @@ def signup_allowed_mentions() -> discord.AllowedMentions:
     """Allowed mentions for signup posts so the ping role actually notifies."""
     if config.PING_ROLE_ID is None:
         return discord.AllowedMentions.none()
-    return discord.AllowedMentions(roles=[config.PING_ROLE_ID])
+    return discord.AllowedMentions(roles=[discord.Object(id=config.PING_ROLE_ID)])
 
 
 def format_requirements(requirements: str) -> str:
