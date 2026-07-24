@@ -213,16 +213,17 @@ def can_manage_role(guild: discord.Guild, role: discord.Role) -> bool:
 
 
 class RoleAssignStatus:
-    """Outcome categories for bulk role assignment."""
+    """Outcome categories for bulk role changes."""
 
     ASSIGNED = "assigned"
+    REMOVED = "removed"
     SKIPPED = "skipped"
     FAILED = "failed"
 
 
 @dataclass(slots=True)
 class RoleAssignOutcome:
-    """Result of attempting to assign a role to one member."""
+    """Result of attempting to change a role for one member."""
 
     display_name: str
     user_id: int
@@ -231,12 +232,12 @@ class RoleAssignOutcome:
 
 
 def validate_role_assignable(guild: discord.Guild, role: discord.Role) -> None:
-    """Raise ValueError if the bot cannot assign this role."""
+    """Raise ValueError if the bot cannot assign or remove this role."""
     if role.is_default():
-        raise ValueError("You cannot assign @everyone.")
+        raise ValueError("You cannot modify @everyone.")
     if role.managed:
         raise ValueError(
-            f"Role **{role.name}** is managed by an integration and cannot be assigned."
+            f"Role **{role.name}** is managed by an integration and cannot be changed."
         )
     if guild.me is None:
         raise ValueError("Bot member is not available in this server.")
@@ -244,7 +245,7 @@ def validate_role_assignable(guild: discord.Guild, role: discord.Role) -> None:
         raise ValueError("I need the **Manage Roles** permission.")
     if role >= guild.me.top_role:
         raise ValueError(
-            f"My highest role must be **above** **{role.name}** to assign it."
+            f"My highest role must be **above** **{role.name}** to manage it."
         )
 
 
@@ -339,36 +340,126 @@ async def assign_role_to_members(
     return outcomes
 
 
+async def remove_role_detailed(
+    member: discord.Member,
+    role: discord.Role,
+    *,
+    reason: str = "Role removal",
+) -> RoleAssignOutcome:
+    """Remove a role and return a detailed outcome."""
+    if role not in member.roles:
+        return RoleAssignOutcome(
+            display_name=member.display_name,
+            user_id=member.id,
+            status=RoleAssignStatus.SKIPPED,
+            reason="does not have role",
+        )
+
+    if not can_manage_role(member.guild, role):
+        logger.warning(
+            "Cannot remove role %s in guild %s — missing permission or hierarchy",
+            role.id,
+            member.guild.id,
+        )
+        return RoleAssignOutcome(
+            display_name=member.display_name,
+            user_id=member.id,
+            status=RoleAssignStatus.SKIPPED,
+            reason="missing permissions",
+        )
+
+    try:
+        await member.remove_roles(role, reason=reason)
+        return RoleAssignOutcome(
+            display_name=member.display_name,
+            user_id=member.id,
+            status=RoleAssignStatus.REMOVED,
+            reason="removed",
+        )
+    except discord.Forbidden:
+        logger.error(
+            "Forbidden removing role %s from %s", role.id, member.id
+        )
+        return RoleAssignOutcome(
+            display_name=member.display_name,
+            user_id=member.id,
+            status=RoleAssignStatus.FAILED,
+            reason="missing permissions",
+        )
+    except discord.HTTPException as exc:
+        logger.error("Failed to remove role %s from %s: %s", role.id, member.id, exc)
+        return RoleAssignOutcome(
+            display_name=member.display_name,
+            user_id=member.id,
+            status=RoleAssignStatus.FAILED,
+            reason="unable to remove role",
+        )
+
+
+async def remove_role_from_members(
+    members: list[discord.Member],
+    role: discord.Role,
+    *,
+    reason: str,
+    delay_seconds: float = 0.35,
+) -> list[RoleAssignOutcome]:
+    """Remove a role from many members, continuing on individual failures."""
+    import asyncio
+
+    outcomes: list[RoleAssignOutcome] = []
+    seen: set[int] = set()
+
+    for member in members:
+        if member.id in seen:
+            continue
+        seen.add(member.id)
+        outcomes.append(await remove_role_detailed(member, role, reason=reason))
+        if delay_seconds > 0:
+            await asyncio.sleep(delay_seconds)
+
+    return outcomes
+
+
 def build_bulk_role_embed(
     role: discord.Role,
     outcomes: list[RoleAssignOutcome],
     *,
     moderator: discord.Member | discord.User,
+    action: str = "assign",
 ) -> discord.Embed:
-    """Build a summary embed for bulk role assignment."""
-    assigned = [o for o in outcomes if o.status == RoleAssignStatus.ASSIGNED]
+    """Build a summary embed for bulk role assignment or removal."""
+    success_status = (
+        RoleAssignStatus.REMOVED if action == "remove" else RoleAssignStatus.ASSIGNED
+    )
+    success = [o for o in outcomes if o.status == success_status]
     skipped = [o for o in outcomes if o.status == RoleAssignStatus.SKIPPED]
     failed = [o for o in outcomes if o.status == RoleAssignStatus.FAILED]
 
-    colour = 0x57F287 if assigned and not failed else (0xFEE75C if skipped or assigned else 0xED4245)
-    embed = discord.Embed(
-        title="Role Assignment",
-        colour=colour,
+    colour = (
+        0x57F287
+        if success and not failed
+        else (0xFEE75C if skipped or success else 0xED4245)
     )
+    title = "Role Removal" if action == "remove" else "Role Assignment"
+    verb = "removed from" if action == "remove" else "assigned to"
+    empty_msg = "No roles removed." if action == "remove" else "No new assignments."
+    success_label = "removed" if action == "remove" else "assigned"
 
-    if assigned:
-        names = ", ".join(o.display_name for o in assigned[:25])
-        if len(assigned) > 25:
-            names += f" … +{len(assigned) - 25} more"
+    embed = discord.Embed(title=title, colour=colour)
+
+    if success:
+        names = ", ".join(o.display_name for o in success[:25])
+        if len(success) > 25:
+            names += f" … +{len(success) - 25} more"
         embed.add_field(
-            name=f"✅ Role \"{role.name}\" assigned to {len(assigned)} user(s)",
+            name=f"✅ Role \"{role.name}\" {verb} {len(success)} user(s)",
             value=names or "—",
             inline=False,
         )
     else:
         embed.add_field(
-            name=f"✅ Role \"{role.name}\" assigned",
-            value="No new assignments.",
+            name=f"✅ Role \"{role.name}\"",
+            value=empty_msg,
             inline=False,
         )
 
@@ -387,7 +478,8 @@ def build_bulk_role_embed(
     embed.set_footer(
         text=(
             f"By {moderator} · Total processed: {len(outcomes)} · "
-            f"{len(assigned)} assigned · {len(skipped)} skipped · {len(failed)} failed"
+            f"{len(success)} {success_label} · {len(skipped)} skipped · "
+            f"{len(failed)} failed"
         )
     )
     return embed
@@ -429,23 +521,15 @@ async def resolve_members_from_ids(
     return members, missing
 
 
-async def remove_role(member: discord.Member, role: discord.Role) -> bool:
+async def remove_role(
+    member: discord.Member,
+    role: discord.Role,
+    *,
+    reason: str = "Role menu removal",
+) -> bool:
     """Remove a role if permitted and currently held. Returns success."""
-    if role not in member.roles:
-        return True
-    if not can_manage_role(member.guild, role):
-        logger.warning(
-            "Cannot remove role %s in guild %s — missing permission or hierarchy",
-            role.id,
-            member.guild.id,
-        )
-        return False
-    try:
-        await member.remove_roles(role, reason="Role menu removal")
-        return True
-    except discord.HTTPException as exc:
-        logger.error("Failed to remove role %s from %s: %s", role.id, member.id, exc)
-        return False
+    outcome = await remove_role_detailed(member, role, reason=reason)
+    return outcome.status != RoleAssignStatus.FAILED
 
 
 async def toggle_role(member: discord.Member, role: discord.Role) -> bool:
