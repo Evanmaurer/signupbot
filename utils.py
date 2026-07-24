@@ -273,6 +273,15 @@ def is_event_host(member: discord.Member) -> bool:
     return any(role.id == config.EVENT_HOST_ROLE_ID for role in member.roles)
 
 
+def can_manage_roles_staff(member: discord.Member) -> bool:
+    """Return True if the member may bulk-assign roles."""
+    if member.guild_permissions.administrator:
+        return True
+    if member.guild_permissions.manage_roles:
+        return True
+    return is_event_host(member)
+
+
 def parse_signup_message(content: str) -> tuple[str, int] | None:
     """
     Parse a signup thread message.

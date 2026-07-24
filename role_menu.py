@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import discord
@@ -211,23 +212,221 @@ def can_manage_role(guild: discord.Guild, role: discord.Role) -> bool:
     return guild.me.top_role > role
 
 
-async def assign_role(member: discord.Member, role: discord.Role) -> bool:
+class RoleAssignStatus:
+    """Outcome categories for bulk role assignment."""
+
+    ASSIGNED = "assigned"
+    SKIPPED = "skipped"
+    FAILED = "failed"
+
+
+@dataclass(slots=True)
+class RoleAssignOutcome:
+    """Result of attempting to assign a role to one member."""
+
+    display_name: str
+    user_id: int
+    status: str
+    reason: str
+
+
+def validate_role_assignable(guild: discord.Guild, role: discord.Role) -> None:
+    """Raise ValueError if the bot cannot assign this role."""
+    if role.is_default():
+        raise ValueError("You cannot assign @everyone.")
+    if role.managed:
+        raise ValueError(
+            f"Role **{role.name}** is managed by an integration and cannot be assigned."
+        )
+    if guild.me is None:
+        raise ValueError("Bot member is not available in this server.")
+    if not guild.me.guild_permissions.manage_roles:
+        raise ValueError("I need the **Manage Roles** permission.")
+    if role >= guild.me.top_role:
+        raise ValueError(
+            f"My highest role must be **above** **{role.name}** to assign it."
+        )
+
+
+async def assign_role(
+    member: discord.Member,
+    role: discord.Role,
+    *,
+    reason: str = "Role menu assignment",
+) -> bool:
     """Add a role if permitted and not already held. Returns success."""
+    outcome = await assign_role_detailed(member, role, reason=reason)
+    return outcome.status != RoleAssignStatus.FAILED
+
+
+async def assign_role_detailed(
+    member: discord.Member,
+    role: discord.Role,
+    *,
+    reason: str = "Role assignment",
+) -> RoleAssignOutcome:
+    """Assign a role and return a detailed outcome."""
     if role in member.roles:
-        return True
+        return RoleAssignOutcome(
+            display_name=member.display_name,
+            user_id=member.id,
+            status=RoleAssignStatus.SKIPPED,
+            reason="already has role",
+        )
+
     if not can_manage_role(member.guild, role):
         logger.warning(
             "Cannot assign role %s in guild %s — missing permission or hierarchy",
             role.id,
             member.guild.id,
         )
-        return False
+        return RoleAssignOutcome(
+            display_name=member.display_name,
+            user_id=member.id,
+            status=RoleAssignStatus.SKIPPED,
+            reason="missing permissions",
+        )
+
     try:
-        await member.add_roles(role, reason="Role menu assignment")
-        return True
+        await member.add_roles(role, reason=reason)
+        return RoleAssignOutcome(
+            display_name=member.display_name,
+            user_id=member.id,
+            status=RoleAssignStatus.ASSIGNED,
+            reason="assigned",
+        )
+    except discord.Forbidden:
+        logger.error(
+            "Forbidden assigning role %s to %s", role.id, member.id
+        )
+        return RoleAssignOutcome(
+            display_name=member.display_name,
+            user_id=member.id,
+            status=RoleAssignStatus.FAILED,
+            reason="missing permissions",
+        )
     except discord.HTTPException as exc:
         logger.error("Failed to assign role %s to %s: %s", role.id, member.id, exc)
-        return False
+        return RoleAssignOutcome(
+            display_name=member.display_name,
+            user_id=member.id,
+            status=RoleAssignStatus.FAILED,
+            reason="unable to assign role",
+        )
+
+
+async def assign_role_to_members(
+    members: list[discord.Member],
+    role: discord.Role,
+    *,
+    reason: str,
+    delay_seconds: float = 0.35,
+) -> list[RoleAssignOutcome]:
+    """Assign a role to many members, continuing on individual failures."""
+    import asyncio
+
+    outcomes: list[RoleAssignOutcome] = []
+    seen: set[int] = set()
+
+    for member in members:
+        if member.id in seen:
+            continue
+        seen.add(member.id)
+        outcomes.append(await assign_role_detailed(member, role, reason=reason))
+        if delay_seconds > 0:
+            await asyncio.sleep(delay_seconds)
+
+    return outcomes
+
+
+def build_bulk_role_embed(
+    role: discord.Role,
+    outcomes: list[RoleAssignOutcome],
+    *,
+    moderator: discord.Member | discord.User,
+) -> discord.Embed:
+    """Build a summary embed for bulk role assignment."""
+    assigned = [o for o in outcomes if o.status == RoleAssignStatus.ASSIGNED]
+    skipped = [o for o in outcomes if o.status == RoleAssignStatus.SKIPPED]
+    failed = [o for o in outcomes if o.status == RoleAssignStatus.FAILED]
+
+    colour = 0x57F287 if assigned and not failed else (0xFEE75C if skipped or assigned else 0xED4245)
+    embed = discord.Embed(
+        title="Role Assignment",
+        colour=colour,
+    )
+
+    if assigned:
+        names = ", ".join(o.display_name for o in assigned[:25])
+        if len(assigned) > 25:
+            names += f" … +{len(assigned) - 25} more"
+        embed.add_field(
+            name=f"✅ Role \"{role.name}\" assigned to {len(assigned)} user(s)",
+            value=names or "—",
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name=f"✅ Role \"{role.name}\" assigned",
+            value="No new assignments.",
+            inline=False,
+        )
+
+    if skipped:
+        lines = [f"• {o.display_name} ({o.reason})" for o in skipped[:20]]
+        if len(skipped) > 20:
+            lines.append(f"… +{len(skipped) - 20} more")
+        embed.add_field(name="⚠️ Skipped", value="\n".join(lines), inline=False)
+
+    if failed:
+        lines = [f"• {o.display_name} ({o.reason})" for o in failed[:20]]
+        if len(failed) > 20:
+            lines.append(f"… +{len(failed) - 20} more")
+        embed.add_field(name="❌ Failed", value="\n".join(lines), inline=False)
+
+    embed.set_footer(
+        text=(
+            f"By {moderator} · Total processed: {len(outcomes)} · "
+            f"{len(assigned)} assigned · {len(skipped)} skipped · {len(failed)} failed"
+        )
+    )
+    return embed
+
+
+USER_MENTION_PATTERN = re.compile(r"<@!?(\d+)>")
+
+
+def parse_user_mentions(text: str) -> list[int]:
+    """Extract unique user IDs from a mention string."""
+    ids: list[int] = []
+    seen: set[int] = set()
+    for match in USER_MENTION_PATTERN.finditer(text):
+        user_id = int(match.group(1))
+        if user_id not in seen:
+            seen.add(user_id)
+            ids.append(user_id)
+    return ids
+
+
+async def resolve_members_from_ids(
+    guild: discord.Guild, user_ids: list[int]
+) -> tuple[list[discord.Member], list[int]]:
+    """Resolve member objects; return (found_members, missing_ids)."""
+    members: list[discord.Member] = []
+    missing: list[int] = []
+    for user_id in user_ids:
+        member = guild.get_member(user_id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(user_id)
+            except discord.NotFound:
+                missing.append(user_id)
+                continue
+            except discord.HTTPException:
+                missing.append(user_id)
+                continue
+        members.append(member)
+    return members, missing
 
 
 async def remove_role(member: discord.Member, role: discord.Role) -> bool:

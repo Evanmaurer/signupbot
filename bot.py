@@ -15,6 +15,7 @@ from discord.ext import commands
 import config
 from cogs.farm import FarmCog
 from cogs.reaction_roles import ReactionRolesCog
+from cogs.roles import RolesCog
 from cogs.split import SplitCog
 from database import Database
 
@@ -53,6 +54,7 @@ class SignupBot(commands.Bot):
         await self.add_cog(FarmCog(self, self.db))
         await self.add_cog(SplitCog(self, self.db))
         await self.add_cog(ReactionRolesCog(self, self.db))
+        await self.add_cog(RolesCog(self))
         await self.tree.sync()
         events = await self.db.get_active_events()
         logger.info("Restored %d active event(s) from database", len(events))
