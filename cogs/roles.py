@@ -252,6 +252,55 @@ class RolesCog(commands.Cog):
 
         await ctx.reply(embed=embed)
 
+    async def _remove_role_from_everyone(
+        self,
+        *,
+        guild: discord.Guild,
+        moderator: discord.Member,
+        role: discord.Role,
+    ) -> discord.Embed:
+        validate_role_assignable(guild, role)
+
+        # role.members requires Server Members Intent (already enabled).
+        targets = [
+            member
+            for member in role.members
+            if self.bot.user is None or member.id != self.bot.user.id
+        ]
+
+        if not targets:
+            embed = discord.Embed(
+                title="Role Removal",
+                description=f"No members currently have **{role.name}**.",
+                colour=0xFEE75C,
+            )
+            embed.set_footer(text=f"By {moderator}")
+            return embed
+
+        outcomes = await remove_role_from_members(
+            targets,
+            role,
+            reason=f"Remove from everyone by {moderator} ({moderator.id})",
+        )
+
+        success = [o for o in outcomes if o.status == RoleAssignStatus.REMOVED]
+        failed = [o for o in outcomes if o.status == RoleAssignStatus.FAILED]
+
+        logger.info(
+            "Bulk role remove-all by %s (%s): role=%s (%s) success=%d failed=%d total=%d",
+            moderator,
+            moderator.id,
+            role.name,
+            role.id,
+            len(success),
+            len(failed),
+            len(outcomes),
+        )
+
+        return build_bulk_role_embed(
+            role, outcomes, moderator=moderator, action="remove"
+        )
+
     @app_commands.command(
         name="role",
         description="Assign a role to one or more members at once.",
@@ -270,19 +319,39 @@ class RolesCog(commands.Cog):
 
     @app_commands.command(
         name="removerole",
-        description="Remove a role from one or more members at once.",
+        description="Remove a role from everyone who has it.",
     )
     @app_commands.describe(
-        role="The role to remove",
-        users="Mention one or more users (e.g. @User1 @User2 @User3)",
+        role="The role to remove from all members",
     )
     async def removerole_slash(
         self,
         interaction: discord.Interaction,
         role: discord.Role,
-        users: str,
     ) -> None:
-        await self._slash_bulk(interaction, role, users, action="remove")
+        moderator = await self._require_staff(interaction=interaction)
+        if moderator is None:
+            return
+
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "This command can only be used in a server.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer()
+
+        try:
+            embed = await self._remove_role_from_everyone(
+                guild=interaction.guild,
+                moderator=moderator,
+                role=role,
+            )
+        except ValueError as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
+            return
+
+        await interaction.followup.send(embed=embed)
 
     @commands.command(name="role", aliases=["giverole"])
     @commands.guild_only()
@@ -305,14 +374,36 @@ class RolesCog(commands.Cog):
         self,
         ctx: commands.Context,
         role: discord.Role | None = None,
-        *,
-        members: str = "",
     ) -> None:
-        """Remove a role from multiple members.
+        """Remove a role from everyone who has it.
 
-        Usage: !removerole @Role @User1 @User2 @User3
+        Usage: !removerole @Role
         """
-        await self._prefix_bulk(ctx, role, members, action="remove")
+        moderator = await self._require_staff(ctx=ctx)
+        if moderator is None:
+            return
+
+        assert ctx.guild is not None
+
+        if role is None:
+            await ctx.reply(
+                "Usage: `!removerole @Role`\n"
+                "Removes that role from every member who has it."
+            )
+            return
+
+        async with ctx.typing():
+            try:
+                embed = await self._remove_role_from_everyone(
+                    guild=ctx.guild,
+                    moderator=moderator,
+                    role=role,
+                )
+            except ValueError as exc:
+                await ctx.reply(str(exc))
+                return
+
+        await ctx.reply(embed=embed)
 
 
 async def setup(bot: commands.Bot) -> None:
