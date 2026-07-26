@@ -29,6 +29,11 @@ SIGNUP_COOLDOWN_SECONDS: float = float(os.getenv("SIGNUP_COOLDOWN_SECONDS", "2")
 # Your local timezone — start times you enter are interpreted in this zone.
 EVENT_TIMEZONE: str = os.getenv("EVENT_TIMEZONE", "America/New_York")
 
+# Albion Online
+ALBION_GUILD_ID: str = os.getenv("ALBION_GUILD_ID", "").strip()
+ALBION_REGION: str = os.getenv("ALBION_REGION", "americas").strip().lower()
+ALBION_TIMEOUT_SECONDS: float = float(os.getenv("ALBION_TIMEOUT_SECONDS", "60"))
+
 # Logging
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 
