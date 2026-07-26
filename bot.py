@@ -13,6 +13,7 @@ import discord
 from discord.ext import commands
 
 import config
+from cogs.albion_roles import AlbionRolesCog
 from cogs.farm import FarmCog
 from cogs.reaction_roles import ReactionRolesCog
 from cogs.roles import RolesCog
@@ -55,6 +56,7 @@ class SignupBot(commands.Bot):
         await self.add_cog(SplitCog(self, self.db))
         await self.add_cog(ReactionRolesCog(self, self.db))
         await self.add_cog(RolesCog(self))
+        await self.add_cog(AlbionRolesCog(self))
         await self.tree.sync()
         events = await self.db.get_active_events()
         logger.info("Restored %d active event(s) from database", len(events))

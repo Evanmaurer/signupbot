@@ -22,6 +22,8 @@ from utils import can_manage_roles_staff
 
 logger = logging.getLogger(__name__)
 
+ROLE_COUNT_PAGE_SIZE = 20
+
 
 class RolesCog(commands.Cog):
     """Multi-user role assignment and removal for moderators."""
@@ -301,6 +303,53 @@ class RolesCog(commands.Cog):
             role, outcomes, moderator=moderator, action="remove"
         )
 
+    async def _ensure_member_cache(self, guild: discord.Guild) -> None:
+        """Populate member cache so role counts are as accurate as possible."""
+        if guild.chunked:
+            return
+        try:
+            await guild.chunk(cache=True)
+        except discord.HTTPException as exc:
+            logger.warning("Could not chunk guild %s for role counts: %s", guild.id, exc)
+
+    async def _build_role_count_embeds(
+        self,
+        *,
+        guild: discord.Guild,
+        requester: discord.Member,
+    ) -> list[discord.Embed]:
+        await self._ensure_member_cache(guild)
+
+        roles = sorted(guild.roles, key=lambda role: role.position, reverse=True)
+        pages = [
+            roles[index : index + ROLE_COUNT_PAGE_SIZE]
+            for index in range(0, len(roles), ROLE_COUNT_PAGE_SIZE)
+        ]
+
+        embeds: list[discord.Embed] = []
+        total_pages = max(len(pages), 1)
+        for page_number, page_roles in enumerate(pages, start=1):
+            lines: list[str] = []
+            for role in page_roles:
+                count = len(guild.members) if role.is_default() else len(role.members)
+                role_label = "@everyone" if role.is_default() else role.mention
+                lines.append(f"{role_label} - **{count}** user(s)")
+
+            embed = discord.Embed(
+                title=f"Server Roles ({len(roles)})",
+                description="\n".join(lines) if lines else "No roles found.",
+                colour=0x5865F2,
+            )
+            embed.set_footer(
+                text=(
+                    f"By {requester} - Page {page_number}/{total_pages} - "
+                    "Counts use the current Discord member cache"
+                )
+            )
+            embeds.append(embed)
+
+        return embeds
+
     @app_commands.command(
         name="role",
         description="Assign a role to one or more members at once.",
@@ -353,6 +402,31 @@ class RolesCog(commands.Cog):
 
         await interaction.followup.send(embed=embed)
 
+    @app_commands.command(
+        name="listroles",
+        description="List server roles and how many users have each one.",
+    )
+    async def listroles_slash(self, interaction: discord.Interaction) -> None:
+        moderator = await self._require_staff(interaction=interaction)
+        if moderator is None:
+            return
+
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "This command can only be used in a server.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer()
+        embeds = await self._build_role_count_embeds(
+            guild=interaction.guild,
+            requester=moderator,
+        )
+
+        await interaction.followup.send(embeds=embeds[:10])
+        for index in range(10, len(embeds), 10):
+            await interaction.followup.send(embeds=embeds[index : index + 10])
+
     @commands.command(name="role", aliases=["giverole"])
     @commands.guild_only()
     async def role_prefix(
@@ -404,6 +478,29 @@ class RolesCog(commands.Cog):
                 return
 
         await ctx.reply(embed=embed)
+
+    @commands.command(name="listroles", aliases=["roleslist", "rolecounts"])
+    @commands.guild_only()
+    async def listroles_prefix(self, ctx: commands.Context) -> None:
+        """List roles and how many users have each role.
+
+        Usage: !listroles
+        """
+        moderator = await self._require_staff(ctx=ctx)
+        if moderator is None:
+            return
+
+        assert ctx.guild is not None
+
+        async with ctx.typing():
+            embeds = await self._build_role_count_embeds(
+                guild=ctx.guild,
+                requester=moderator,
+            )
+
+        await ctx.reply(embed=embeds[0])
+        for embed in embeds[1:]:
+            await ctx.send(embed=embed)
 
 
 async def setup(bot: commands.Bot) -> None:
