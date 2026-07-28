@@ -12,8 +12,7 @@ from io import StringIO
 IGNORE_EXACT_50_REMOVE_PLAYERS = frozenset(
     {
         "jdlikesmilfs",
-        "thesebigoldnuts",
-        "deezbigolnuts",  # common spelling of the same player
+        "deezbigolnutz",
     }
 )
 IGNORE_OVER_300_REMOVE_PLAYERS = frozenset(
