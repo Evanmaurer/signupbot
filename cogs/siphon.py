@@ -389,8 +389,10 @@ class SiphonCog(commands.Cog):
         interaction: discord.Interaction,
         view: str = "all",
     ) -> None:
-        requester = await self._require_staff(interaction=interaction)
-        if requester is None:
+        if not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message(
+                "This command can only be used in a server.", ephemeral=True
+            )
             return
         if interaction.guild is None:
             await interaction.response.send_message(
@@ -402,7 +404,7 @@ class SiphonCog(commands.Cog):
         try:
             embeds = await self._build_balances_embeds(
                 guild_id=interaction.guild.id,
-                requester=requester,
+                requester=interaction.user,
                 view=view,
             )
         except ValueError as exc:
@@ -469,8 +471,8 @@ class SiphonCog(commands.Cog):
 
         Usage: !siphonbalances [all|negative|positive]
         """
-        requester = await self._require_staff(ctx=ctx)
-        if requester is None:
+        if not isinstance(ctx.author, discord.Member):
+            await ctx.reply("This command can only be used in a server.")
             return
 
         assert ctx.guild is not None
@@ -479,7 +481,7 @@ class SiphonCog(commands.Cog):
             try:
                 embeds = await self._build_balances_embeds(
                     guild_id=ctx.guild.id,
-                    requester=requester,
+                    requester=ctx.author,
                     view=view,
                 )
             except ValueError as exc:
