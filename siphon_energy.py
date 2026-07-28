@@ -13,6 +13,7 @@ class SiphonImportResult:
     """Parsed siphoned energy export totals."""
 
     rows: int
+    duplicate_rows: int
     balances: dict[str, int]
     display_names: dict[str, str]
 
@@ -31,10 +32,14 @@ def parse_siphon_export(text: str) -> SiphonImportResult:
 
     balances: defaultdict[str, int] = defaultdict(int)
     display_names: dict[str, str] = {}
+    seen_rows: set[tuple[str, str, str, int]] = set()
     rows = 0
+    duplicate_rows = 0
 
     for row in reader:
+        date_text = (row.get("Date") or "").strip()
         player = (row.get("Player") or "").strip()
+        reason = (row.get("Reason") or "").strip()
         amount_text = (row.get("Amount") or "").replace(",", "").strip()
         if not player:
             continue
@@ -44,6 +49,12 @@ def parse_siphon_export(text: str) -> SiphonImportResult:
             raise ValueError(f'Invalid amount "{amount_text}" for player "{player}".') from exc
 
         normalized = normalize_player_name(player)
+        duplicate_key = (date_text, normalized, reason, amount)
+        if duplicate_key in seen_rows:
+            duplicate_rows += 1
+            continue
+        seen_rows.add(duplicate_key)
+
         balances[normalized] += amount
         display_names.setdefault(normalized, player)
         rows += 1
@@ -53,6 +64,7 @@ def parse_siphon_export(text: str) -> SiphonImportResult:
 
     return SiphonImportResult(
         rows=rows,
+        duplicate_rows=duplicate_rows,
         balances=dict(balances),
         display_names=display_names,
     )

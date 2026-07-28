@@ -172,6 +172,12 @@ class SiphonCog(commands.Cog):
             colour=0x57F287,
         )
         embed.add_field(name="Rows Imported", value=str(parsed.rows), inline=True)
+        if parsed.duplicate_rows:
+            embed.add_field(
+                name="Duplicate Rows Ignored",
+                value=str(parsed.duplicate_rows),
+                inline=True,
+            )
         embed.add_field(name="Players", value=str(len(rows)), inline=True)
         embed.add_field(name="Matched Discord Users", value=str(matched), inline=True)
         embed.add_field(name="Players Needing Deposit", value=str(debtors), inline=True)
