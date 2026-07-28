@@ -157,7 +157,7 @@ class SiphonCog(commands.Cog):
         creditors = sum(1 for _, _, _, balance in rows if balance > 0)
         total_credit = sum(balance for _, _, _, balance in rows if balance > 0)
         top_debt = [
-            f"**{player_name}**: {-balance}"
+            f"**{player_name}**: {balance}"
             for _, player_name, _, balance in sorted(rows, key=lambda row: row[3])[:10]
             if balance < 0
         ]
@@ -250,11 +250,11 @@ class SiphonCog(commands.Cog):
             lines: list[str] = []
             for _, player_name, discord_user_id, balance, _ in page:
                 if balance < 0:
-                    label = f"needs {-balance}"
+                    label = str(balance)
                 elif balance > 0:
-                    label = f"credit +{balance}"
+                    label = f"+{balance}"
                 else:
-                    label = "even"
+                    label = "0"
                 mention = f" <@{discord_user_id}>" if discord_user_id else ""
                 lines.append(f"**{player_name}**{mention} - {label}")
 
@@ -279,7 +279,10 @@ class SiphonCog(commands.Cog):
     @staticmethod
     def _format_single_balance(player_name: str, balance: int) -> str:
         if balance < 0:
-            return f"**{player_name}** needs to deposit **{-balance}** siphoned energy."
+            return (
+                f"**{player_name}** needs to deposit **{-balance}** siphoned energy "
+                f"(balance **{balance}**)."
+            )
         if balance > 0:
             return f"**{player_name}** has **+{balance}** siphoned energy credit."
         return f"**{player_name}** is even at **0** siphoned energy."
