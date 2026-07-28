@@ -178,6 +178,12 @@ class SiphonCog(commands.Cog):
                 value=str(parsed.duplicate_rows),
                 inline=True,
             )
+        if parsed.ignored_rows:
+            embed.add_field(
+                name="Exempt Removes Ignored",
+                value=str(parsed.ignored_rows),
+                inline=True,
+            )
         embed.add_field(name="Players", value=str(len(rows)), inline=True)
         embed.add_field(name="Matched Discord Users", value=str(matched), inline=True)
         embed.add_field(name="Players Needing Deposit", value=str(debtors), inline=True)
