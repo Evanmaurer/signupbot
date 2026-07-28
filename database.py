@@ -97,6 +97,19 @@ CREATE TABLE IF NOT EXISTS role_panel_entries (
 CREATE INDEX IF NOT EXISTS idx_role_panels_guild_id ON role_panels(guild_id);
 CREATE INDEX IF NOT EXISTS idx_role_panels_message_id ON role_panels(message_id);
 CREATE INDEX IF NOT EXISTS idx_role_panel_entries_panel_id ON role_panel_entries(panel_id);
+
+CREATE TABLE IF NOT EXISTS siphon_balances (
+    guild_id INTEGER NOT NULL,
+    normalized_player TEXT NOT NULL,
+    player_name TEXT NOT NULL,
+    discord_user_id INTEGER,
+    balance INTEGER NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (guild_id, normalized_player)
+);
+
+CREATE INDEX IF NOT EXISTS idx_siphon_balances_guild_id ON siphon_balances(guild_id);
+CREATE INDEX IF NOT EXISTS idx_siphon_balances_discord_user_id ON siphon_balances(discord_user_id);
 """
 
 
@@ -606,4 +619,88 @@ class Database:
             (panel_id,),
         )
         await self.conn.execute("DELETE FROM role_panels WHERE id = ?", (panel_id,))
+        await self.conn.commit()
+
+    async def replace_siphon_balances(
+        self,
+        guild_id: int,
+        balances: list[tuple[str, str, int | None, int]],
+    ) -> None:
+        """Replace the current siphon balance snapshot for a server."""
+        await self.conn.execute(
+            "DELETE FROM siphon_balances WHERE guild_id = ?",
+            (guild_id,),
+        )
+        for normalized_player, player_name, discord_user_id, balance in balances:
+            await self.conn.execute(
+                """
+                INSERT INTO siphon_balances (
+                    guild_id, normalized_player, player_name,
+                    discord_user_id, balance, updated_at
+                ) VALUES (?, ?, ?, ?, ?, datetime('now'))
+                """,
+                (
+                    guild_id,
+                    normalized_player,
+                    player_name,
+                    discord_user_id,
+                    balance,
+                ),
+            )
+        await self.conn.commit()
+
+    async def get_siphon_balances(
+        self, guild_id: int
+    ) -> list[tuple[str, str, int | None, int, str]]:
+        """Return siphon balance rows for a server."""
+        rows = await self.conn.execute_fetchall(
+            """
+            SELECT normalized_player, player_name, discord_user_id, balance, updated_at
+            FROM siphon_balances
+            WHERE guild_id = ?
+            ORDER BY balance ASC, player_name COLLATE NOCASE
+            """,
+            (guild_id,),
+        )
+        return [
+            (
+                row["normalized_player"],
+                row["player_name"],
+                row["discord_user_id"],
+                row["balance"],
+                row["updated_at"],
+            )
+            for row in rows
+        ]
+
+    async def set_siphon_balance(
+        self,
+        *,
+        guild_id: int,
+        normalized_player: str,
+        player_name: str,
+        discord_user_id: int | None,
+        balance: int,
+    ) -> None:
+        """Create or update one siphon balance row."""
+        await self.conn.execute(
+            """
+            INSERT INTO siphon_balances (
+                guild_id, normalized_player, player_name,
+                discord_user_id, balance, updated_at
+            ) VALUES (?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(guild_id, normalized_player) DO UPDATE SET
+                player_name = excluded.player_name,
+                discord_user_id = excluded.discord_user_id,
+                balance = excluded.balance,
+                updated_at = datetime('now')
+            """,
+            (
+                guild_id,
+                normalized_player,
+                player_name,
+                discord_user_id,
+                balance,
+            ),
+        )
         await self.conn.commit()

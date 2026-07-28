@@ -17,6 +17,7 @@ from cogs.albion_roles import AlbionRolesCog
 from cogs.farm import FarmCog
 from cogs.reaction_roles import ReactionRolesCog
 from cogs.roles import RolesCog
+from cogs.siphon import SiphonCog
 from cogs.split import SplitCog
 from database import Database
 
@@ -56,6 +57,7 @@ class SignupBot(commands.Bot):
         await self.add_cog(SplitCog(self, self.db))
         await self.add_cog(ReactionRolesCog(self, self.db))
         await self.add_cog(RolesCog(self))
+        await self.add_cog(SiphonCog(self, self.db))
         await self.add_cog(AlbionRolesCog(self))
         await self.tree.sync()
         events = await self.db.get_active_events()
