@@ -7,6 +7,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from io import StringIO
 
+from name_match import name_match_keys, normalize_match_name
+
 # Ignore specific remove rows that are known bank/admin adjustments.
 # Matches player name (case-insensitive), including names like "Name/Alt".
 IGNORE_EXACT_50_REMOVE_PLAYERS = frozenset(
@@ -37,15 +39,7 @@ class SiphonImportResult:
 
 def normalize_player_name(name: str) -> str:
     """Normalize an Albion player name for exact matching."""
-    return name.strip().casefold()
-
-
-def _player_match_keys(normalized: str) -> set[str]:
-    """Return match keys for a player, including the part before '/'."""
-    keys = {normalized}
-    if "/" in normalized:
-        keys.add(normalized.split("/", 1)[0].strip())
-    return {key for key in keys if key}
+    return normalize_match_name(name)
 
 
 def _is_remove_row(reason: str, amount: int) -> bool:
@@ -61,7 +55,7 @@ def should_ignore_siphon_row(player: str, reason: str, amount: int) -> bool:
         return False
 
     magnitude = abs(amount)
-    keys = _player_match_keys(normalize_player_name(player))
+    keys = name_match_keys(player)
 
     if magnitude == 50 and keys & IGNORE_EXACT_50_REMOVE_PLAYERS:
         return True

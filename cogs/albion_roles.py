@@ -17,6 +17,7 @@ from albion_client import (
     AlbionBattlePlayer,
     fetch_battle_players,
 )
+from name_match import member_name_keys, normalize_match_name
 from role_menu import (
     RoleAssignOutcome,
     RoleAssignStatus,
@@ -40,25 +41,20 @@ class AlbionMemberMatch:
     failed_outcomes: list[RoleAssignOutcome]
 
 
-def _normalize_name(name: str | None) -> str:
-    return (name or "").strip().casefold()
-
-
 def _member_name_candidates(member: discord.Member) -> set[str]:
-    names = {
-        _normalize_name(getattr(member, "nick", None)),
-        _normalize_name(getattr(member, "display_name", None)),
-        _normalize_name(getattr(member, "name", None)),
-        _normalize_name(getattr(member, "global_name", None)),
-    }
-    return {name for name in names if name}
+    return member_name_keys(
+        nick=getattr(member, "nick", None),
+        display_name=getattr(member, "display_name", None),
+        name=getattr(member, "name", None),
+        global_name=getattr(member, "global_name", None),
+    )
 
 
 def match_albion_players_to_members(
     players: list[AlbionBattlePlayer],
     members: list[discord.Member],
 ) -> AlbionMemberMatch:
-    """Match Albion player names exactly against Discord member names."""
+    """Match Albion player names against Discord member names."""
     member_index: dict[str, list[discord.Member]] = {}
     for member in members:
         if getattr(member, "bot", False):
@@ -73,7 +69,7 @@ def match_albion_players_to_members(
     seen_member_ids: set[int] = set()
 
     for player in players:
-        matches = member_index.get(_normalize_name(player.name), [])
+        matches = member_index.get(normalize_match_name(player.name), [])
         if not matches:
             failed.append(
                 RoleAssignOutcome(

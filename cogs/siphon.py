@@ -9,6 +9,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from name_match import member_name_keys
 from siphon_energy import normalize_player_name, parse_siphon_export
 from utils import can_manage_roles_staff
 
@@ -21,13 +22,12 @@ BALANCE_PAGE_SIZE = 20
 
 
 def _member_name_candidates(member: discord.Member) -> set[str]:
-    names = {
-        getattr(member, "nick", None),
-        getattr(member, "display_name", None),
-        getattr(member, "name", None),
-        getattr(member, "global_name", None),
-    }
-    return {normalize_player_name(name) for name in names if name}
+    return member_name_keys(
+        nick=getattr(member, "nick", None),
+        display_name=getattr(member, "display_name", None),
+        name=getattr(member, "name", None),
+        global_name=getattr(member, "global_name", None),
+    )
 
 
 class SiphonCog(commands.Cog):
