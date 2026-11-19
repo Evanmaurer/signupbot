@@ -55,8 +55,8 @@ class SplitCog(commands.Cog):
 
         if not matches:
             await interaction.response.send_message(
-                "No farm event found for this channel or thread. "
-                "Run `/avasplit` in the signup channel or signup thread.",
+                "No raid found for this channel. "
+                "Run `/avasplit` in the raid's channel or pass `event_id` (see `/ava list`).",
                 ephemeral=True,
             )
             return None

@@ -13,6 +13,42 @@ class Slot:
     slot_number: int
     role_name: str
     user_id: int | None = None
+    emoji: str | None = None
+
+
+@dataclass(slots=True)
+class RoleGroup:
+    """All slots of one role name within an event (e.g. the 5 DPS slots)."""
+
+    role_name: str
+    emoji: str
+    slots: list[Slot] = field(default_factory=list)
+
+    @property
+    def total(self) -> int:
+        return len(self.slots)
+
+    @property
+    def filled(self) -> int:
+        return sum(1 for slot in self.slots if slot.user_id is not None)
+
+    @property
+    def is_full(self) -> bool:
+        return self.filled >= self.total
+
+    def first_open(self) -> Slot | None:
+        for slot in self.slots:
+            if slot.user_id is None:
+                return slot
+        return None
+
+
+class SignupStatus:
+    """Non-roster signup states shown under the roster."""
+
+    TENTATIVE = "tentative"
+    ABSENCE = "absence"
+    ALL = (TENTATIVE, ABSENCE)
 
 
 @dataclass(slots=True)
@@ -23,7 +59,7 @@ class FarmEvent:
     guild_id: int
     channel_id: int
     message_id: int
-    thread_id: int
+    thread_id: int | None
     creator_id: int
     title: str
     leaving_from: str
@@ -32,6 +68,9 @@ class FarmEvent:
     requirements: str
     closed: bool
     slots: list[Slot] = field(default_factory=list)
+    # user_id -> SignupStatus value (tentative / absence)
+    statuses: dict[int, str] = field(default_factory=dict)
+    loot_thread_id: int | None = None
 
     @property
     def total_slots(self) -> int:
@@ -52,6 +91,48 @@ class FarmEvent:
             if slot.user_id == user_id:
                 return slot
         return None
+
+    def role_groups(self) -> list[RoleGroup]:
+        """Group slots by role name, in slot order."""
+        from raid_presets import default_role_emoji
+        from role_icons import icon_for_role
+
+        groups: dict[str, RoleGroup] = {}
+        for slot in sorted(self.slots, key=lambda s: s.slot_number):
+            group = groups.get(slot.role_name)
+            if group is None:
+                group = RoleGroup(
+                    role_name=slot.role_name,
+                    emoji=icon_for_role(slot.role_name)
+                    or slot.emoji
+                    or default_role_emoji(slot.role_name),
+                )
+                groups[slot.role_name] = group
+            group.slots.append(slot)
+        return list(groups.values())
+
+    def role_group(self, role_name: str) -> RoleGroup | None:
+        for group in self.role_groups():
+            if group.role_name.lower() == role_name.lower():
+                return group
+        return None
+
+    def users_with_status(self, status: str) -> list[int]:
+        return [uid for uid, value in self.statuses.items() if value == status]
+
+
+@dataclass(slots=True)
+class RaidPreset:
+    """A saved raid template: roles, default title, map type and requirements."""
+
+    id: int
+    guild_id: int
+    name: str
+    title: str
+    map_type: str
+    roles: str
+    requirements: str
+    creator_id: int
 
 
 @dataclass(slots=True)
@@ -78,48 +159,33 @@ class AvaSplitRecord:
     created_at: str
 
 
-class RolePanelType:
-    """Role panel interaction type."""
+@dataclass(slots=True)
+class LootPlayer:
+    """A player in a loot split, optionally matched to a raid signup."""
 
-    REACTION = "reaction"
-    BUTTON = "button"
+    name: str
+    user_id: int | None = None
 
 
 @dataclass(slots=True)
-class RolePanelEntry:
-    """Single emoji/button to role mapping."""
+class LootSplit:
+    """Screenshot-driven loot split state for one raid's loot thread."""
 
-    id: int
-    panel_id: int
-    emoji_key: str
-    role_id: int
-    label: str
-    sort_order: int
+    event_id: int
+    market_value: int | None = None
+    market_value_approx: bool = False
+    repair_cost: int | None = None
+    silver_bags: int = 0
+    panel_message_id: int | None = None
+    review_message_id: int | None = None
+    confirmed: bool = False
+    players: list[LootPlayer] = field(default_factory=list)
 
 
 @dataclass(slots=True)
-class RolePanel:
-    """A reaction-role or button-role menu."""
+class GuildSettings:
+    """Server-wide AVA settings."""
 
-    id: int
     guild_id: int
-    channel_id: int
-    message_id: int
-    creator_id: int
-    title: str
-    description: str
-    panel_type: str
-    created_at: str
-    entries: list[RolePanelEntry] = field(default_factory=list)
-
-    def entry_by_emoji(self, emoji_key: str) -> RolePanelEntry | None:
-        for entry in self.entries:
-            if entry.emoji_key == emoji_key:
-                return entry
-        return None
-
-    def entry_by_id(self, entry_id: int) -> RolePanelEntry | None:
-        for entry in self.entries:
-            if entry.id == entry_id:
-                return entry
-        return None
+    raid_channel_id: int | None = None
+    loot_channel_id: int | None = None

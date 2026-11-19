@@ -1,4 +1,4 @@
-"""Discord Fame Farm Signup Bot entry point."""
+"""Take Care AVA — Albion Online AVA raid signup & loot-split bot."""
 
 from __future__ import annotations
 
@@ -13,13 +13,11 @@ import discord
 from discord.ext import commands
 
 import config
-from cogs.albion_roles import AlbionRolesCog
-from cogs.farm import FarmCog
-from cogs.reaction_roles import ReactionRolesCog
-from cogs.roles import RolesCog
-from cogs.siphon import SiphonCog
+from cogs.loot import LootCog
+from cogs.raid import RaidCog
 from cogs.split import SplitCog
 from database import Database
+from role_icons import sync_role_icons
 
 logging.basicConfig(
     level=getattr(logging, config.LOG_LEVEL.upper(), logging.INFO),
@@ -48,20 +46,36 @@ class SignupBot(commands.Bot):
             command_prefix="!",
             intents=INTENTS,
             connector=create_ssl_connector(),
+            enable_debug_events=True,
         )
         self.db = Database(config.DATABASE_PATH)
+        self._gateway_events: dict[str, int] = {}
 
     async def setup_hook(self) -> None:
         await self.db.connect()
-        await self.add_cog(FarmCog(self, self.db))
+        await sync_role_icons(self)
+        await self.add_cog(RaidCog(self, self.db))
+        await self.add_cog(LootCog(self, self.db))
         await self.add_cog(SplitCog(self, self.db))
-        await self.add_cog(ReactionRolesCog(self, self.db))
-        await self.add_cog(RolesCog(self))
-        await self.add_cog(SiphonCog(self, self.db))
-        await self.add_cog(AlbionRolesCog(self))
         await self.tree.sync()
         events = await self.db.get_active_events()
         logger.info("Restored %d active event(s) from database", len(events))
+        asyncio.create_task(self._connection_report())
+
+    async def on_socket_event_type(self, event_type: str) -> None:
+        self._gateway_events[event_type] = self._gateway_events.get(event_type, 0) + 1
+
+    async def _connection_report(self) -> None:
+        """Log connection health once a minute (helps spot a silently dead link)."""
+        await self.wait_until_ready()
+        while not self.is_closed():
+            await asyncio.sleep(60)
+            logger.info(
+                "Connection check: latency=%.0fms gateway events in last minute=%s",
+                self.latency * 1000,
+                dict(sorted(self._gateway_events.items())) or "none",
+            )
+            self._gateway_events.clear()
 
     async def close(self) -> None:
         await self.db.close()
