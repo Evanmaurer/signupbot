@@ -68,9 +68,10 @@ class FarmEvent:
     requirements: str
     closed: bool
     slots: list[Slot] = field(default_factory=list)
-    # user_id -> SignupStatus value (tentative / absence)
+    # user_id -> SignupStatus value (absence)
     statuses: dict[int, str] = field(default_factory=dict)
     loot_thread_id: int | None = None
+    colour: int | None = None
 
     @property
     def total_slots(self) -> int:
@@ -94,16 +95,20 @@ class FarmEvent:
 
     def role_groups(self) -> list[RoleGroup]:
         """Group slots by role name, in slot order."""
-        from raid_presets import default_role_emoji
+        from raid_presets import default_role_emoji, is_generic_emoji
         from role_icons import icon_for_role
 
         groups: dict[str, RoleGroup] = {}
         for slot in sorted(self.slots, key=lambda s: s.slot_number):
             group = groups.get(slot.role_name)
             if group is None:
+                # A preset's own icon wins; generic placeholder emojis are upgraded
+                # to the built-in Albion icons when the role name matches one.
+                own = slot.emoji if slot.emoji and not is_generic_emoji(slot.emoji) else None
                 group = RoleGroup(
                     role_name=slot.role_name,
-                    emoji=icon_for_role(slot.role_name)
+                    emoji=own
+                    or icon_for_role(slot.role_name)
                     or slot.emoji
                     or default_role_emoji(slot.role_name),
                 )
@@ -133,6 +138,8 @@ class RaidPreset:
     roles: str
     requirements: str
     creator_id: int
+    image_path: str | None = None
+    colour: int | None = None
 
 
 @dataclass(slots=True)
@@ -180,6 +187,10 @@ class LootSplit:
     review_message_id: int | None = None
     confirmed: bool = False
     players: list[LootPlayer] = field(default_factory=list)
+    sell_pct: float | None = None  # sell-off cut for this raid; None = hideout default
+    sold_value: int | None = None  # what the loot actually sold for (overrides the estimate)
+    map_cost: int = 0  # paid back to the raid lead with the repair cost
+    borrowers: list[str] = field(default_factory=list)  # normalized names that rented a set
 
 
 @dataclass(slots=True)
@@ -189,3 +200,5 @@ class GuildSettings:
     guild_id: int
     raid_channel_id: int | None = None
     loot_channel_id: int | None = None
+    ping_role_id: int | None = None  # None = default from config, 0 = don't ping
+    timezone: str | None = None  # IANA name used for times typed without one

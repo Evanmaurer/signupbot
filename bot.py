@@ -13,6 +13,7 @@ import discord
 from discord.ext import commands
 
 import config
+from cogs.balance import BalanceCog
 from cogs.loot import LootCog
 from cogs.raid import RaidCog
 from cogs.split import SplitCog
@@ -57,6 +58,7 @@ class SignupBot(commands.Bot):
         await self.add_cog(RaidCog(self, self.db))
         await self.add_cog(LootCog(self, self.db))
         await self.add_cog(SplitCog(self, self.db))
+        await self.add_cog(BalanceCog(self, self.db))
         await self.tree.sync()
         events = await self.db.get_active_events()
         logger.info("Restored %d active event(s) from database", len(events))

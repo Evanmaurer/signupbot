@@ -8,3 +8,4 @@ venv/
 .DS_Store
 *.bak
 screen shots/
+preset_images/

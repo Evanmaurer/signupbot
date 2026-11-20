@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 from datetime import datetime
@@ -40,7 +41,8 @@ CREATE TABLE IF NOT EXISTS events (
     closed INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     loot_thread_id INTEGER,
-    started INTEGER NOT NULL DEFAULT 0
+    started INTEGER NOT NULL DEFAULT 0,
+    colour INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS slots (
@@ -59,6 +61,7 @@ CREATE TABLE IF NOT EXISTS event_statuses (
     user_id INTEGER NOT NULL,
     status TEXT NOT NULL,
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    role_name TEXT,
     PRIMARY KEY (event_id, user_id),
     FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
 );
@@ -66,7 +69,9 @@ CREATE TABLE IF NOT EXISTS event_statuses (
 CREATE TABLE IF NOT EXISTS guild_settings (
     guild_id INTEGER PRIMARY KEY,
     loot_channel_id INTEGER,
-    raid_channel_id INTEGER
+    raid_channel_id INTEGER,
+    ping_role_id INTEGER,
+    timezone TEXT
 );
 
 CREATE TABLE IF NOT EXISTS loot_splits (
@@ -78,6 +83,10 @@ CREATE TABLE IF NOT EXISTS loot_splits (
     panel_message_id INTEGER,
     review_message_id INTEGER,
     confirmed INTEGER NOT NULL DEFAULT 0,
+    sell_pct REAL,
+    sold_value INTEGER,
+    map_cost INTEGER,
+    borrowers TEXT,
     FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
 );
 
@@ -90,6 +99,22 @@ CREATE TABLE IF NOT EXISTS loot_players (
     FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
 );
 
+-- AVA balances: one row per change. A member's balance is the sum of their rows.
+-- Payout rows carry the raid's event_id so a re-confirmed payout replaces them.
+CREATE TABLE IF NOT EXISTS ava_balance_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    amount INTEGER NOT NULL,
+    kind TEXT NOT NULL,            -- 'payout' | 'admin'
+    event_id INTEGER,
+    reason TEXT NOT NULL DEFAULT '',
+    created_by INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_balance_guild_user ON ava_balance_entries(guild_id, user_id);
+CREATE INDEX IF NOT EXISTS idx_balance_event ON ava_balance_entries(event_id);
+
 CREATE TABLE IF NOT EXISTS raid_presets (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id INTEGER NOT NULL,
@@ -100,6 +125,8 @@ CREATE TABLE IF NOT EXISTS raid_presets (
     requirements TEXT NOT NULL,
     creator_id INTEGER NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    image_path TEXT,
+    colour INTEGER,
     UNIQUE (guild_id, name)
 );
 
@@ -206,6 +233,34 @@ class Database:
             await conn.commit()
             logger.info("Migration: added events.started column")
 
+        preset_cols = {
+            row["name"]
+            for row in await conn.execute_fetchall("PRAGMA table_info(raid_presets)")
+        }
+        if preset_cols and "image_path" not in preset_cols:
+            await conn.execute("ALTER TABLE raid_presets ADD COLUMN image_path TEXT")
+            await conn.execute("ALTER TABLE raid_presets ADD COLUMN colour INTEGER")
+            await conn.commit()
+            logger.info("Migration: added raid_presets.image_path/colour columns")
+        if "colour" not in event_col_names:
+            await conn.execute("ALTER TABLE events ADD COLUMN colour INTEGER")
+            await conn.commit()
+            logger.info("Migration: added events.colour column")
+
+        status_cols = {
+            row["name"]
+            for row in await conn.execute_fetchall("PRAGMA table_info(event_statuses)")
+        }
+        if status_cols and "role_name" not in status_cols:
+            await conn.execute("ALTER TABLE event_statuses ADD COLUMN role_name TEXT")
+            await conn.commit()
+            logger.info("Migration: added event_statuses.role_name column")
+        # Tentative signups were removed; drop any leftover marks.
+        cursor = await conn.execute("DELETE FROM event_statuses WHERE status = 'tentative'")
+        if cursor.rowcount:
+            await conn.commit()
+            logger.info("Removed %d leftover tentative mark(s)", cursor.rowcount)
+
         settings_cols = {
             row["name"]
             for row in await conn.execute_fetchall("PRAGMA table_info(guild_settings)")
@@ -214,6 +269,24 @@ class Database:
             await conn.execute("ALTER TABLE guild_settings ADD COLUMN raid_channel_id INTEGER")
             await conn.commit()
             logger.info("Migration: added guild_settings.raid_channel_id column")
+        if settings_cols and "ping_role_id" not in settings_cols:
+            await conn.execute("ALTER TABLE guild_settings ADD COLUMN ping_role_id INTEGER")
+            await conn.commit()
+            logger.info("Migration: added guild_settings.ping_role_id column")
+        if settings_cols and "timezone" not in settings_cols:
+            await conn.execute("ALTER TABLE guild_settings ADD COLUMN timezone TEXT")
+            await conn.commit()
+            logger.info("Migration: added guild_settings.timezone column")
+        if split_cols and "sell_pct" not in split_cols:
+            await conn.execute("ALTER TABLE loot_splits ADD COLUMN sell_pct REAL")
+            await conn.execute("ALTER TABLE loot_splits ADD COLUMN sold_value INTEGER")
+            await conn.commit()
+            logger.info("Migration: added loot_splits.sell_pct/sold_value columns")
+        if split_cols and "map_cost" not in split_cols:
+            await conn.execute("ALTER TABLE loot_splits ADD COLUMN map_cost INTEGER")
+            await conn.execute("ALTER TABLE loot_splits ADD COLUMN borrowers TEXT")
+            await conn.commit()
+            logger.info("Migration: added loot_splits.map_cost/borrowers columns")
 
         event_cols = await conn.execute_fetchall("PRAGMA table_info(events)")
         thread_col = next((c for c in event_cols if c["name"] == "thread_id"), None)
@@ -245,17 +318,18 @@ class Database:
                 closed INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 loot_thread_id INTEGER,
-                started INTEGER NOT NULL DEFAULT 0
+                started INTEGER NOT NULL DEFAULT 0,
+                colour INTEGER
             );
             INSERT INTO events_new (
                 id, guild_id, channel_id, message_id, thread_id, creator_id, title,
                 leaving_from, map_type, start_time, requirements, closed, created_at,
-                loot_thread_id, started
+                loot_thread_id, started, colour
             )
             SELECT
                 id, guild_id, channel_id, message_id, thread_id, creator_id, title,
                 leaving_from, map_type, start_time, requirements, closed, created_at,
-                loot_thread_id, started
+                loot_thread_id, started, colour
             FROM events;
             DROP TABLE events;
             ALTER TABLE events_new RENAME TO events;
@@ -291,13 +365,14 @@ class Database:
         start_time: datetime,
         requirements: str,
         slots: list[tuple[int, str, str | None]],
+        colour: int | None = None,
     ) -> FarmEvent:
         cursor = await self.conn.execute(
             """
             INSERT INTO events (
                 guild_id, channel_id, message_id, thread_id, creator_id,
-                title, leaving_from, map_type, start_time, requirements
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                title, leaving_from, map_type, start_time, requirements, colour
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 guild_id,
@@ -310,6 +385,7 @@ class Database:
                 map_type,
                 start_time.isoformat(),
                 requirements,
+                colour,
             ),
         )
         event_id = cursor.lastrowid
@@ -343,6 +419,7 @@ class Database:
             requirements=requirements,
             closed=False,
             slots=slot_models,
+            colour=colour,
         )
 
     async def _row_to_event(self, row: aiosqlite.Row) -> FarmEvent:
@@ -385,6 +462,7 @@ class Database:
             slots=slots,
             statuses=statuses,
             loot_thread_id=row["loot_thread_id"],
+            colour=row["colour"],
         )
 
     async def get_event_by_id(self, event_id: int) -> FarmEvent | None:
@@ -434,9 +512,10 @@ class Database:
         )
         return [await self._row_to_event(row) for row in rows]
 
-    # ── Signup statuses (tentative / absence) ─────────────────────────────
+    # ── Signup statuses (absence) ─────────────────────────────────────────
 
     async def set_user_status(self, event_id: int, user_id: int, status: str | None) -> None:
+        """Set a member's absence mark (None clears it)."""
         if status is None:
             await self.conn.execute(
                 "DELETE FROM event_statuses WHERE event_id = ? AND user_id = ?",
@@ -472,6 +551,8 @@ class Database:
             guild_id=guild_id,
             raid_channel_id=rows[0]["raid_channel_id"],
             loot_channel_id=rows[0]["loot_channel_id"],
+            ping_role_id=rows[0]["ping_role_id"],
+            timezone=rows[0]["timezone"],
         )
 
     async def update_guild_settings(
@@ -480,8 +561,10 @@ class Database:
         *,
         raid_channel_id: int | None = None,
         loot_channel_id: int | None = None,
+        ping_role_id: int | None = None,
+        timezone: str | None = None,
     ) -> None:
-        """Set the given channels (None leaves a setting unchanged)."""
+        """Set the given values (None leaves a setting unchanged; ping_role_id 0 = no ping)."""
         await self.conn.execute(
             "INSERT OR IGNORE INTO guild_settings (guild_id) VALUES (?)", (guild_id,)
         )
@@ -494,6 +577,16 @@ class Database:
             await self.conn.execute(
                 "UPDATE guild_settings SET loot_channel_id = ? WHERE guild_id = ?",
                 (loot_channel_id, guild_id),
+            )
+        if ping_role_id is not None:
+            await self.conn.execute(
+                "UPDATE guild_settings SET ping_role_id = ? WHERE guild_id = ?",
+                (ping_role_id, guild_id),
+            )
+        if timezone is not None:
+            await self.conn.execute(
+                "UPDATE guild_settings SET timezone = ? WHERE guild_id = ?",
+                (timezone, guild_id),
             )
         await self.conn.commit()
 
@@ -546,14 +639,21 @@ class Database:
             review_message_id=row["review_message_id"],
             confirmed=bool(row["confirmed"]),
             players=players,
+            sell_pct=row["sell_pct"],
+            sold_value=row["sold_value"],
+            map_cost=row["map_cost"] or 0,
+            borrowers=json.loads(row["borrowers"]) if row["borrowers"] else [],
         )
 
     async def update_loot_split(self, event_id: int, **fields: Any) -> None:
         """Upsert columns of loot_splits (market_value, repair_cost, silver_bags, ...)."""
         allowed = {
             "market_value", "market_value_approx", "repair_cost", "silver_bags",
-            "panel_message_id", "review_message_id", "confirmed",
+            "panel_message_id", "review_message_id", "confirmed", "sell_pct", "sold_value",
+            "map_cost", "borrowers",
         }
+        if isinstance(fields.get("borrowers"), list):
+            fields["borrowers"] = json.dumps(fields["borrowers"])
         unknown = set(fields) - allowed
         if unknown:
             raise ValueError(f"Unknown loot split fields: {unknown}")
@@ -611,6 +711,82 @@ class Database:
         await self.conn.execute("DELETE FROM loot_players WHERE event_id = ?", (event_id,))
         await self.add_loot_players(event_id, players)
 
+    # ── AVA balances ──────────────────────────────────────────────────────
+
+    async def get_balance(self, guild_id: int, user_id: int) -> int:
+        rows = await self.conn.execute_fetchall(
+            "SELECT COALESCE(SUM(amount), 0) AS total FROM ava_balance_entries "
+            "WHERE guild_id = ? AND user_id = ?",
+            (guild_id, user_id),
+        )
+        return int(rows[0]["total"])
+
+    async def get_balances(self, guild_id: int) -> list[tuple[int, int]]:
+        """(user_id, balance) for everyone with a non-zero balance, highest first."""
+        rows = await self.conn.execute_fetchall(
+            "SELECT user_id, SUM(amount) AS total FROM ava_balance_entries WHERE guild_id = ? "
+            "GROUP BY user_id HAVING total != 0 ORDER BY total DESC",
+            (guild_id,),
+        )
+        return [(r["user_id"], int(r["total"])) for r in rows]
+
+    async def get_balance_history(
+        self, guild_id: int, user_id: int, limit: int = 10
+    ) -> list[aiosqlite.Row]:
+        return await self.conn.execute_fetchall(
+            "SELECT b.amount, b.kind, b.reason, b.created_by, b.created_at, b.event_id, e.title "
+            "FROM ava_balance_entries b LEFT JOIN events e ON e.id = b.event_id "
+            "WHERE b.guild_id = ? AND b.user_id = ? ORDER BY b.id DESC LIMIT ?",
+            (guild_id, user_id, limit),
+        )
+
+    async def add_balance(
+        self, guild_id: int, user_id: int, amount: int, *, reason: str = "", created_by: int | None
+    ) -> int:
+        """Admin adjustment (negative to remove). Returns the new balance."""
+        await self.conn.execute(
+            "INSERT INTO ava_balance_entries (guild_id, user_id, amount, kind, reason, created_by) "
+            "VALUES (?, ?, ?, 'admin', ?, ?)",
+            (guild_id, user_id, amount, reason, created_by),
+        )
+        await self.conn.commit()
+        return await self.get_balance(guild_id, user_id)
+
+    async def reset_balance(self, guild_id: int, user_id: int) -> int:
+        """Clear one member's balance and history. Returns the balance it had."""
+        before = await self.get_balance(guild_id, user_id)
+        await self.conn.execute(
+            "DELETE FROM ava_balance_entries WHERE guild_id = ? AND user_id = ?",
+            (guild_id, user_id),
+        )
+        await self.conn.commit()
+        return before
+
+    async def wipe_balances(self, guild_id: int) -> int:
+        """Clear every balance in a server. Returns how many members had one."""
+        rows = await self.conn.execute_fetchall(
+            "SELECT COUNT(DISTINCT user_id) AS n FROM ava_balance_entries WHERE guild_id = ?",
+            (guild_id,),
+        )
+        await self.conn.execute("DELETE FROM ava_balance_entries WHERE guild_id = ?", (guild_id,))
+        await self.conn.commit()
+        return int(rows[0]["n"])
+
+    async def set_payout_credits(
+        self, guild_id: int, event_id: int, credits: list[tuple[int, int]], created_by: int
+    ) -> None:
+        """Replace a raid's payout credits with (user_id, amount) pairs."""
+        await self.conn.execute(
+            "DELETE FROM ava_balance_entries WHERE event_id = ? AND kind = 'payout'", (event_id,)
+        )
+        await self.conn.executemany(
+            "INSERT INTO ava_balance_entries "
+            "(guild_id, user_id, amount, kind, event_id, reason, created_by) "
+            "VALUES (?, ?, ?, 'payout', ?, '', ?)",
+            [(guild_id, uid, amount, event_id, created_by) for uid, amount in credits if amount],
+        )
+        await self.conn.commit()
+
     # ── Raid presets ──────────────────────────────────────────────────────
 
     @staticmethod
@@ -624,6 +800,8 @@ class Database:
             roles=row["roles"],
             requirements=row["requirements"],
             creator_id=row["creator_id"],
+            image_path=row["image_path"],
+            colour=row["colour"],
         )
 
     async def get_presets(self, guild_id: int) -> list[RaidPreset]:
@@ -651,27 +829,36 @@ class Database:
         requirements: str,
         creator_id: int,
         original_name: str | None = None,
+        image_path: str | None = None,
+        colour: int | None = None,
     ) -> None:
         """Create a preset, or update it (renaming from original_name if given)."""
-        if original_name and original_name.strip().lower() != name.strip().lower():
+        if original_name and original_name.strip() != name.strip():
+            # Rename in place so the preset keeps its ID (role icons are keyed by it).
             await self.conn.execute(
-                "DELETE FROM raid_presets WHERE guild_id = ? AND name = ?",
-                (guild_id, original_name.strip()),
+                "UPDATE raid_presets SET name = ? WHERE guild_id = ? AND name = ?",
+                (name.strip(), guild_id, original_name.strip()),
             )
         await self.conn.execute(
             """
             INSERT INTO raid_presets (
-                guild_id, name, title, map_type, roles, requirements, creator_id
+                guild_id, name, title, map_type, roles, requirements, creator_id,
+                image_path, colour
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (guild_id, name) DO UPDATE SET
                 name = excluded.name,
                 title = excluded.title,
                 map_type = excluded.map_type,
                 roles = excluded.roles,
-                requirements = excluded.requirements
+                requirements = excluded.requirements,
+                image_path = excluded.image_path,
+                colour = excluded.colour
             """,
-            (guild_id, name.strip(), title, map_type, roles, requirements, creator_id),
+            (
+                guild_id, name.strip(), title, map_type, roles, requirements, creator_id,
+                image_path, colour,
+            ),
         )
         await self.conn.commit()
 

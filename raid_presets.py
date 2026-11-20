@@ -45,6 +45,17 @@ _COUNT_SUFFIX = re.compile(r"^(.*?)\s*[x×*]\s*(\d{1,2})$", re.I)
 _COUNT_PREFIX = re.compile(r"^(\d{1,2})\s*[x×*]\s*(.+)$", re.I)
 
 
+# Emojis the bot picks automatically; roles using one of these get the built-in
+# Albion icon instead when there is one for that role name.
+_GENERIC_EMOJIS = {e.replace("️", "") for _, e in _ROLE_EMOJI_KEYWORDS} | {
+    DEFAULT_ROLE_EMOJI, "🏹", "❄️".replace("️", ""), "🗡️".replace("️", ""),
+}
+
+
+def is_generic_emoji(emoji: str) -> bool:
+    return emoji.replace("️", "") in _GENERIC_EMOJIS
+
+
 def default_role_emoji(role_name: str) -> str:
     """Pick a sensible emoji for an Albion role name."""
     lowered = role_name.lower()

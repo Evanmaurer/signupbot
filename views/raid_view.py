@@ -72,12 +72,12 @@ class RaidActionButton(
     discord.ui.DynamicItem[discord.ui.Button],
     template=r"raid:(?P<action>tentative|absence|leave):(?P<event_id>\d+)",
 ):
-    """Tentative / Absence / Leave buttons."""
+    """Absence / Leave buttons (old posts may still carry a Tentative button)."""
 
     STYLES = {
-        "tentative": ("Tentative", "❔", discord.ButtonStyle.secondary),
+        "tentative": ("Tentative", "❔", discord.ButtonStyle.secondary),  # removed; old posts only
         "absence": ("Absence", "🚫", discord.ButtonStyle.secondary),
-        "leave": ("Leave", "🚪", discord.ButtonStyle.danger),
+        "leave": ("Leave", "🚪", discord.ButtonStyle.danger),  # removed; old posts only
     }
 
     def __init__(self, action: str, event_id: int, *, disabled: bool = False) -> None:
@@ -136,7 +136,7 @@ def build_raid_view(event: FarmEvent) -> discord.ui.View:
             placeholder="🔒 Signups are closed" if closed else "🎯 Pick your role…",
         )
     )
-    for action in ("tentative", "absence", "leave"):
+    for action in ("absence",):  # Leave was removed; Absence frees your slot too
         view.add_item(RaidActionButton(action, event.id, disabled=closed))
     return view
 

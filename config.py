@@ -19,6 +19,9 @@ EVENT_HOST_ROLE_ID: int | None = (
 )
 _ping_role = os.getenv("PING_ROLE_ID", "1521223466190377101")
 PING_ROLE_ID: int | None = int(_ping_role) if _ping_role else None
+# Role allowed to add/remove/wipe AVA balances (Administrators always can).
+_balance_admin_role = os.getenv("BALANCE_ADMIN_ROLE_ID", "1573063350915436586")
+BALANCE_ADMIN_ROLE_ID: int | None = int(_balance_admin_role) if _balance_admin_role else None
 
 # Database
 DATABASE_PATH: Path = Path(os.getenv("DATABASE_PATH", "signupbot.db"))

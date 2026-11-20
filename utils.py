@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone, tzinfo
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
@@ -58,14 +58,62 @@ def parse_farm_date(text: str) -> tuple[int, int, int]:
     return year, month, day
 
 
-def parse_farm_time(text: str) -> tuple[int, int]:
-    """Parse a raid time into (hour, minute).
+# Timezone words people type after a time. Regions (not fixed offsets) so daylight
+# saving is handled: "10 pm est" in July still means Eastern time.
+TIMEZONE_ALIASES: dict[str, str] = {
+    "utc": "UTC", "gmt": "UTC", "z": "UTC", "server": "UTC", "st": "UTC",
+    "est": "America/New_York", "edt": "America/New_York", "et": "America/New_York",
+    "eastern": "America/New_York",
+    "cst": "America/Chicago", "cdt": "America/Chicago", "ct": "America/Chicago",
+    "central": "America/Chicago",
+    "mst": "America/Denver", "mdt": "America/Denver", "mt": "America/Denver",
+    "mountain": "America/Denver",
+    "pst": "America/Los_Angeles", "pdt": "America/Los_Angeles", "pt": "America/Los_Angeles",
+    "pacific": "America/Los_Angeles",
+    "akst": "America/Anchorage", "akdt": "America/Anchorage",
+    "hst": "Pacific/Honolulu",
+    "ast": "America/Halifax", "adt": "America/Halifax",
+    "brt": "America/Sao_Paulo",
+    "bst": "Europe/London", "uk": "Europe/London",
+    "cet": "Europe/Paris", "cest": "Europe/Paris",
+    "eet": "Europe/Athens", "eest": "Europe/Athens",
+    "msk": "Europe/Moscow",
+    "ist": "Asia/Kolkata",
+    "sgt": "Asia/Singapore",
+    "jst": "Asia/Tokyo",
+    "kst": "Asia/Seoul",
+    "aest": "Australia/Sydney", "aedt": "Australia/Sydney",
+    "awst": "Australia/Perth",
+    "nzst": "Pacific/Auckland", "nzdt": "Pacific/Auckland",
+}
+_TZ_SUFFIX = re.compile(r"\s*\b([a-z]{1,8})\.?$", re.I)
+_OFFSET_SUFFIX = re.compile(r"\s*\b(?:utc|gmt)\s*([+-])\s*(\d{1,2})(?::?(\d{2}))?$", re.I)
 
-    Accepts 24-hour (`18`, `18:30`, `1830`), 12-hour (`6 PM`, `6:30pm`),
-    with an optional `UTC` / `GMT` / `Z` suffix (times are always EVENT_TIMEZONE).
+
+def split_timezone(text: str) -> tuple[str, tzinfo | None]:
+    """Split a trailing timezone ('est', 'utc+2', ...) off a time string."""
+    text = text.strip()
+    offset = _OFFSET_SUFFIX.search(text)
+    if offset:
+        sign = 1 if offset.group(1) == "+" else -1
+        hours, minutes = int(offset.group(2)), int(offset.group(3) or 0)
+        if hours > 14 or minutes > 59:
+            raise ValueError(f'Invalid UTC offset in "{text}".')
+        tz = timezone(sign * timedelta(hours=hours, minutes=minutes))
+        return text[: offset.start()].strip(), tz
+    word = _TZ_SUFFIX.search(text)
+    if word and word.group(1).lower() in TIMEZONE_ALIASES:
+        return text[: word.start()].strip(), ZoneInfo(TIMEZONE_ALIASES[word.group(1).lower()])
+    return text, None
+
+
+def parse_farm_time(text: str) -> tuple[int, int]:
+    """Parse a raid time (without timezone) into (hour, minute).
+
+    Accepts 24-hour (`18`, `18:30`, `1830`) and 12-hour (`6 PM`, `6:30pm`, `10p`).
     """
     original = text
-    text = re.sub(r"\s*(utc|gmt|z)$", "", text.strip(), flags=re.I).strip()
+    text, _ = split_timezone(text)
 
     twelve = re.match(r"^(\d{1,2})(?::(\d{2}))?\s*([AP])\.?M?\.?$", text, re.I)
     twenty_four = re.match(r"^(\d{1,2})(?::?(\d{2}))?$", text)
@@ -81,7 +129,8 @@ def parse_farm_time(text: str) -> tuple[int, int]:
         hour, minute = int(twenty_four.group(1)), int(twenty_four.group(2) or 0)
     else:
         raise ValueError(
-            f'Invalid time "{original}". Use UTC like **18**, **18:30** or **6 PM**.'
+            f'Invalid time "{original}". Use something like **10 PM EST**, '
+            "**22:00 CST** or **18 UTC**."
         )
 
     if not (0 <= hour <= 23 and 0 <= minute <= 59):
@@ -90,11 +139,37 @@ def parse_farm_time(text: str) -> tuple[int, int]:
     return hour, minute
 
 
-def combine_farm_datetime(date_str: str, time_str: str) -> datetime:
-    """Combine separate date and time strings in the host's EVENT_TIMEZONE."""
-    tz = get_event_timezone()
-    year, month, day = parse_farm_date(date_str)
+def server_timezone(name: str | None) -> ZoneInfo:
+    """The server's default timezone (from /ava settings), else EVENT_TIMEZONE."""
+    if name:
+        try:
+            return ZoneInfo(name)
+        except Exception:
+            logger.warning("Unknown server timezone %r — using EVENT_TIMEZONE", name)
+    return get_event_timezone()
+
+
+def combine_farm_datetime(
+    date_str: str | None,
+    time_str: str,
+    *,
+    default_date: datetime | None = None,
+    default_tz: tzinfo | None = None,
+) -> datetime:
+    """Combine a date and a time like '10 pm est' into an aware datetime.
+
+    The time's own timezone is used when given, else default_tz (the server's
+    timezone), else EVENT_TIMEZONE. With no date, default_date's day (in that
+    timezone) is used, or today.
+    """
+    _, given_tz = split_timezone(time_str)
+    tz = given_tz or default_tz or get_event_timezone()
     hour, minute = parse_farm_time(time_str)
+    if date_str and date_str.strip():
+        year, month, day = parse_farm_date(date_str)
+    else:
+        base = (default_date or datetime.now(timezone.utc)).astimezone(tz)
+        year, month, day = base.year, base.month, base.day
     return datetime(year, month, day, hour, minute, tzinfo=tz)
 
 
@@ -131,18 +206,34 @@ def discord_timestamp(dt: datetime, style: str = "F") -> str:
     return f"<t:{int(dt.timestamp())}:{style}>"
 
 
-def signup_ping_content() -> str | None:
+def resolve_ping_role_id(setting: int | None) -> int | None:
+    """The role to ping for new raids: the server setting, else the config default.
+
+    A setting of 0 means pings are turned off.
+    """
+    if setting is None:
+        return config.PING_ROLE_ID
+    return setting or None
+
+
+def signup_ping_content(role_id: int | None, guild_id: int | None = None) -> str | None:
     """Return role ping text for new signup announcements, or None."""
-    if config.PING_ROLE_ID is None:
+    if role_id is None:
         return None
-    return f"<@&{config.PING_ROLE_ID}>"
+    if role_id == guild_id:
+        return "@everyone"
+    return f"<@&{role_id}>"
 
 
-def signup_allowed_mentions() -> discord.AllowedMentions:
+def signup_allowed_mentions(
+    role_id: int | None, guild_id: int | None = None
+) -> discord.AllowedMentions:
     """Allowed mentions for signup posts so the ping role actually notifies."""
-    if config.PING_ROLE_ID is None:
+    if role_id is None:
         return discord.AllowedMentions.none()
-    return discord.AllowedMentions(roles=[discord.Object(id=config.PING_ROLE_ID)])
+    if role_id == guild_id:
+        return discord.AllowedMentions(everyone=True, roles=False, users=False)
+    return discord.AllowedMentions(roles=[discord.Object(id=role_id)], users=False)
 
 
 def _progress_bar(filled: int, total: int, width: int = 10) -> str:
@@ -156,9 +247,9 @@ def _role_field_value(group: RoleGroup) -> str:
     lines: list[str] = []
     for slot in group.slots:
         if slot.user_id is None:
-            lines.append(f"`{slot.slot_number:>2}` ─")
+            lines.append(f"`{slot.slot_number}` ─")
         else:
-            lines.append(f"`{slot.slot_number:>2}` <@{slot.user_id}>")
+            lines.append(f"`{slot.slot_number}` <@{slot.user_id}>")
     value = "\n".join(lines)
     return value[:1024]
 
@@ -170,19 +261,24 @@ def _mention_list(user_ids: list[int]) -> str:
     return text if len(text) <= 1024 else text[:1000] + f"… (+{len(user_ids)})"
 
 
-def build_farm_embed(event: FarmEvent, *, with_image: bool = False) -> discord.Embed:
+def build_farm_embed(event: FarmEvent, *, image_name: str | None = None) -> discord.Embed:
     """Build a Raid-Helper style signup embed for an AVA raid.
 
-    with_image shows the raid comp graphic attached to the post (attachment://raid_comp.png).
+    image_name is the filename of the picture attached to the post (shown via attachment://).
     """
     closed = event.closed
-    colour = config.EMBED_COLOUR_CLOSED if closed else config.EMBED_COLOUR_OPEN
+    if closed:
+        colour = config.EMBED_COLOUR_CLOSED
+    else:
+        colour = event.colour if event.colour is not None else config.EMBED_COLOUR_OPEN
     filled, total = event.filled_slots, event.total_slots
 
     status = "🔒 **Signups closed**\n\n" if closed else ""
+    notes = event.requirements.strip()
     description = (
         f"{status}"
-        f"📅 {discord_timestamp(event.start_time, 'D')}  ·  "
+        + (f"{notes}\n\n" if notes else "")
+        + f"📅 {discord_timestamp(event.start_time, 'D')}  ·  "
         f"⏰ {discord_timestamp(event.start_time, 't')}  ·  "
         f"⏳ {discord_timestamp(event.start_time, 'R')}\n\n"
         f"👥 **{filled}/{total}**  {_progress_bar(filled, total)}"
@@ -197,12 +293,7 @@ def build_farm_embed(event: FarmEvent, *, with_image: bool = False) -> discord.E
             inline=True,
         )
 
-    tentative = event.users_with_status(SignupStatus.TENTATIVE)
     absence = event.users_with_status(SignupStatus.ABSENCE)
-    if tentative:
-        embed.add_field(
-            name=f"❔ Tentative ({len(tentative)})", value=_mention_list(tentative), inline=False
-        )
     if absence:
         embed.add_field(
             name=f"🚫 Absence ({len(absence)})", value=_mention_list(absence), inline=False
@@ -213,8 +304,8 @@ def build_farm_embed(event: FarmEvent, *, with_image: bool = False) -> discord.E
         footer += "  ·  Use the dropdown to sign up"
     embed.set_footer(text=footer)
     embed.timestamp = event.start_time
-    if with_image:
-        embed.set_image(url="attachment://raid_comp.png")
+    if image_name:
+        embed.set_image(url=f"attachment://{image_name}")
     return embed
 
 
