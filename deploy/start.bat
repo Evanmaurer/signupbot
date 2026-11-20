@@ -10,7 +10,7 @@ if not exist .venv\Scripts\python.exe (
 )
 
 if not exist .env (
-    echo Missing .env — copy .env.example to .env and set DISCORD_BOT_TOKEN.
+    echo Missing .env - copy .env.example to .env and set DISCORD_BOT_TOKEN.
     exit /b 1
 )
 
